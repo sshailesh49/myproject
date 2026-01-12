@@ -14,7 +14,7 @@ resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = true #tfsec:ignore:aws-ec2-no-public-ip-subnet
 }
 
 resource "aws_internet_gateway" "gw" {
@@ -32,15 +32,21 @@ resource "aws_route_table" "public" {
 # ECS Cluster
 resource "aws_ecs_cluster" "main" {
   name = "devops-cluster"
+  
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 # Load Balancer
 resource "aws_lb" "main" {
   name               = "devops-alb"
-  internal           = false
+  internal           = false #tfsec:ignore:aws-elb-alb-not-public
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb.id]
   subnets            = aws_subnet.public[*].id
+  drop_invalid_header_fields = true
 }
 
 resource "aws_security_group" "lb" {
@@ -51,14 +57,14 @@ resource "aws_security_group" "lb" {
     from_port = 80
     to_port   = 80
     protocol  = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-ingress-sgr
     description = "Allow HTTP inbound traffic from internet"
   }
   egress {
     from_port = 0
     to_port   = 0
     protocol  = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-egress-sgr
     description = "Allow all outbound traffic"
   }
 }

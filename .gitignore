@@ -1,0 +1,10 @@
+.DS_Store
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.log
+__pycache__/
+node_modules/
+.next/
+.env

@@ -83,9 +83,57 @@ resource "aws_lb" "main" {
   enable_deletion_protection = false
 }
 
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = "80"
+  protocol          = "HTTP" #tfsec:ignore:aws-elb-http-not-used
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.frontend.arn
+  }
+}
+
+resource "aws_lb_listener_rule" "backend_api" {
+  listener_arn = aws_lb_listener.front_end.arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/api/*", "/health", "/docs", "/openapi.json"]
+    }
+  }
+}
+
+
+# Target Groups
 resource "aws_lb_target_group" "backend" {
   name        = "backend-tg-${random_id.suffix.hex}"
-  port        = 80
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+  
+  health_check {
+    path                = "/health"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+}
+
+resource "aws_lb_target_group" "frontend" {
+  name        = "frontend-tg-${random_id.suffix.hex}"
+  port        = 3000
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
@@ -102,16 +150,6 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
-resource "aws_lb_listener" "front_end" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = "80"
-  protocol          = "HTTP" #tfsec:ignore:aws-elb-http-not-used
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
-  }
-}
 
 # Security Groups
 resource "aws_security_group" "lb" {
@@ -146,11 +184,19 @@ resource "aws_security_group" "ecs_tasks" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 80
-    to_port         = 80
+    from_port       = 8000
+    to_port         = 8000
     protocol        = "tcp"
     security_groups = [aws_security_group.lb.id]
-    description     = "Allow traffic from ALB on container port"
+    description     = "Allow traffic from ALB on container port 8000"
+  }
+
+  ingress {
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lb.id]
+    description     = "Allow traffic from ALB on container port 3000"
   }
 
   egress {
@@ -234,7 +280,12 @@ resource "aws_cloudwatch_log_group" "backend" {
   retention_in_days = 7
 }
 
-# ECS Task Definition
+resource "aws_cloudwatch_log_group" "frontend" {
+  name              = "/ecs/frontend"
+  retention_in_days = 7
+}
+
+# ECS Task Definitions
 resource "aws_ecs_task_definition" "backend" {
   family                   = "backend-task-${random_id.suffix.hex}"
   network_mode             = "awsvpc"
@@ -247,12 +298,12 @@ resource "aws_ecs_task_definition" "backend" {
   container_definitions = jsonencode([
     {
       name      = "backend"
-      image     = "nginx:alpine"  # Using a placeholder - replace with your actual image
+      image     = "docker.io/${var.docker_username}/myproject-backend:${var.image_tag}"
       essential = true
       portMappings = [
         {
-          containerPort = 80
-          hostPort      = 80
+          containerPort = 8000
+          hostPort      = 8000
           protocol      = "tcp"
         }
       ]
@@ -274,7 +325,46 @@ resource "aws_ecs_task_definition" "backend" {
   ])
 }
 
-# ECS Service
+resource "aws_ecs_task_definition" "frontend" {
+  family                   = "frontend-task-${random_id.suffix.hex}"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "frontend"
+      image     = "docker.io/${var.docker_username}/myproject-frontend:${var.image_tag}"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 3000
+          hostPort      = 3000
+          protocol      = "tcp"
+        }
+      ]
+      environment = [
+        {
+          name  = "NEXT_PUBLIC_API_URL"
+          value = "http://${aws_lb.main.dns_name}" 
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.frontend.name
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+}
+
+# ECS Services
 resource "aws_ecs_service" "backend" {
   name            = "backend-service-${random_id.suffix.hex}"
   cluster         = aws_ecs_cluster.main.id
@@ -291,20 +381,48 @@ resource "aws_ecs_service" "backend" {
   load_balancer {
     target_group_arn = aws_lb_target_group.backend.arn
     container_name   = "backend"
-    container_port   = 80
+    container_port   = 8000
   }
 
   deployment_controller {
     type = "ECS"
   }
   
-  # Avoid conflicts with ALB during initial creation
   lifecycle {
     ignore_changes = [desired_count]
   }
   
   depends_on = [
     aws_lb_target_group.backend,
+    aws_lb_listener.front_end
+  ]
+}
+
+resource "aws_ecs_service" "frontend" {
+  name            = "frontend-service-${random_id.suffix.hex}"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.frontend.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.frontend.arn
+    container_name   = "frontend"
+    container_port   = 3000
+  }
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+  
+  depends_on = [
+    aws_lb_target_group.frontend,
     aws_lb_listener.front_end
   ]
 }
@@ -317,15 +435,4 @@ output "alb_dns_name" {
 output "ecs_cluster_name" {
   value       = aws_ecs_cluster.main.name
   description = "ECS Cluster name"
-}
-
-output "task_definition_family" {
-  value       = aws_ecs_task_definition.backend.family
-  description = "ECS Task Definition family"
-}
-
-output "secret_name" {
-  value       = aws_secretsmanager_secret.db_password.name
-  description = "Secrets Manager secret name"
-  sensitive   = true
 }

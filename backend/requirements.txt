@@ -2,3 +2,6 @@ fastapi
 uvicorn
 pytest
 httpx
+black
+flake8
+isort

@@ -31,25 +31,4 @@ jobs:
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         TF_VAR_docker_username: ${{ secrets.DOCKER_USERNAME }}
 
-  deploy-gcp:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - name: Google Auth
-      uses: google-github-actions/auth@v1
-      with:
-        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-
-    - name: Terraform Init
-      working-directory: ./terraform/gcp
-      run: terraform init
-
-    - name: Terraform Apply
-      working-directory: ./terraform/gcp
-      run: terraform apply -auto-approve
-      env:
-        GOOGLE_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        TF_VAR_docker_username: ${{ secrets.DOCKER_USERNAME }}
+ 

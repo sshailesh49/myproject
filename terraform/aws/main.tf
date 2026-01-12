@@ -15,7 +15,7 @@ resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true #tfsec:ignore:aws-ec2-no-public-ip-subnet
+  map_public_ip_on_launch = true   #tfsec:ignore:aws-ec2-no-public-ip-subnet
 }
 
 resource "aws_internet_gateway" "gw" {
@@ -87,7 +87,7 @@ resource "aws_ecs_service" "backend" {
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.lb.id] # Reusing LB SG for simplicity, ideally separate
+    security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = true
   }
 
@@ -148,6 +148,32 @@ resource "aws_security_group" "lb" {
     cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-egress-sgr
     description = "Allow all outbound traffic"
   }
+}
+
+resource "aws_security_group" "ecs_tasks" {
+  vpc_id      = aws_vpc.main.id
+  description = "Security group for ECS tasks"
+
+  ingress {
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lb.id]
+    description     = "Allow traffic from ALB on container port"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-egress-sgr
+    description = "Allow all outbound traffic"
+  }
+}
+
+output "alb_dns_name" {
+  value       = aws_lb.main.dns_name
+  description = "The DNS name of the ALB"
 }
 
 # ... Data sources and other resources would go here

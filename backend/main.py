@@ -35,10 +35,20 @@ def health_check():
     logger.info("Health check requested")
     return {"status": "healthy"}
 
+import os
+
 @app.get("/api/message")
 def get_message():
     logger.info("Message API requested")
-    return {"message": "Hello Thisis DevOps Assignment from Python Backend! FastAPI + Docker + Docker Compose + GitHub Actions + Terraform + AWS + GCP"}
+    
+    # Check for Secret Injection
+    db_pass = os.environ.get("DB_PASSWORD", "NOT_FOUND")
+    secret_status = "Secret Injected!" if db_pass != "NOT_FOUND" else "Secret Missing"
+    
+    return {
+        "message": "Hello Thisis DevOps Assignment from Python Backend! FastAPI + Docker + Docker Compose + GitHub Actions + Terraform + AWS + GCP",
+        "secret_status": secret_status
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

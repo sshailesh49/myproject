@@ -15,7 +15,7 @@ resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true   #tfsec:ignore:aws-ec2-no-public-ip-subnet
+  map_public_ip_on_launch = true #tfsec:ignore:aws-ec2-no-public-ip-subnet
 }
 
 resource "aws_internet_gateway" "gw" {
@@ -209,4 +209,3 @@ resource "aws_iam_role_policy" "ecs_secrets_policy" {
     ]
   })
 }
-

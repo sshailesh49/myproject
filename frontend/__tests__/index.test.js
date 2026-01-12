@@ -1,7 +1,5 @@
 import { render, screen } from '@testing-library/react'
 import Home from '../pages/index'
-import '@testing-library/jest-dom'
-
 describe('Home', () => {
     it('renders a heading', () => {
         // Mocking fetch specifically for this test if needed, or just testing static render

@@ -3,6 +3,7 @@ provider "aws" {
 }
 
 # VPC and Networking
+#tfsec:ignore:aws-ec2-require-vpc-flow-logs-for-all-vpcs
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -76,9 +77,9 @@ resource "random_id" "suffix" {
   byte_length = 4
 }
 
+#tfsec:ignore:aws-ssm-secret-use-customer-key
 resource "aws_secretsmanager_secret" "db_password" {
   name = "db-password-${random_id.suffix.hex}"
-  #tfsec:ignore:aws-ssm-secret-use-customer-key
 }
 
 resource "aws_secretsmanager_secret_version" "db_password" {

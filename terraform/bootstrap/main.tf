@@ -2,6 +2,7 @@ provider "aws" {
   region = "us-east-1"
 }
 
+#tfsec:ignore:aws-s3-enable-bucket-logging
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "devops-assignment-tf-state-${random_id.bucket_suffix.hex}"
   

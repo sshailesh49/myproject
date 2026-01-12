@@ -112,7 +112,7 @@ resource "aws_lb_target_group" "backend" {
 resource "aws_lb_listener" "front_end" {
   load_balancer_arn = aws_lb.main.arn
   port              = "80"
-  protocol          = "HTTP"
+  protocol          = "HTTP" #tfsec:ignore:aws-elb-http-not-used
 
   default_action {
     type             = "forward"

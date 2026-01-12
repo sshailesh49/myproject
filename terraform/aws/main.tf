@@ -5,34 +5,65 @@ provider "aws" {
 # VPC and Networking
 #tfsec:ignore:aws-ec2-require-vpc-flow-logs-for-all-vpcs
 resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
+  cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
-  tags = { Name = "devops-assignment-vpc" }
+  enable_dns_support   = true
+  tags = { 
+    Name = "devops-assignment-vpc" 
+  }
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 resource "aws_subnet" "public" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = "10.0.${count.index + 1}.0/24"
-  availability_zone = data.aws_availability_zones.available.names[count.index]
+  count                   = 2
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index + 1)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true   #tfsec:ignore:aws-ec2-no-public-ip-subnet
+  
+  tags = {
+    Name = "public-subnet-${count.index + 1}"
+  }
 }
 
 resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.main.id
+  
+  tags = {
+    Name = "devops-igw"
+  }
 }
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.gw.id
+  
+  tags = {
+    Name = "public-route-table"
   }
+}
+
+resource "aws_route" "public_internet" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.gw.id
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
 }
 
 # ECS Cluster
 resource "aws_ecs_cluster" "main" {
-  name = "devops-cluster"
+  name = "devops-cluster-${random_id.suffix.hex}"
   
   setting {
     name  = "containerInsights"
@@ -40,72 +71,34 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
-resource "aws_ecs_task_definition" "backend" {
-  family                   = "backend-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-
-  container_definitions = jsonencode([
-    {
-      name      = "backend"
-      image     = "docker.io/${var.docker_username}/myproject-backend:latest"
-      essential = true
-      portMappings = [
-        {
-          containerPort = 8000
-          hostPort      = 8000
-        }
-      ]
-      secrets = [
-        {
-          name      = "DB_PASSWORD"
-          valueFrom = aws_secretsmanager_secret.db_password.arn
-        }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = "/ecs/backend"
-          "awslogs-region"        = "us-east-1"
-          "awslogs-stream-prefix" = "ecs"
-          "awslogs-create-group"  = "true"
-        }
-      }
-    }
-  ])
-}
-
-resource "aws_ecs_service" "backend" {
-  name            = "backend-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = aws_subnet.public[*].id
-    security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.backend.arn
-    container_name   = "backend"
-    container_port   = 8000
-  }
+# Load Balancer
+resource "aws_lb" "main" {
+  name               = "devops-alb-${random_id.suffix.hex}"
+  internal           = false #tfsec:ignore:aws-elb-alb-not-public
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.lb.id]
+  subnets            = aws_subnet.public[*].id
+  drop_invalid_header_fields = true
+  
+  enable_deletion_protection = false
 }
 
 resource "aws_lb_target_group" "backend" {
-  name        = "backend-tg"
-  port        = 8000
+  name        = "backend-tg-${random_id.suffix.hex}"
+  port        = 80
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+  
   health_check {
-    path = "/health"
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
   }
 }
 
@@ -120,43 +113,41 @@ resource "aws_lb_listener" "front_end" {
   }
 }
 
-# Load Balancer
-resource "aws_lb" "main" {
-  name               = "devops-alb"
-  internal           = false #tfsec:ignore:aws-elb-alb-not-public
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.lb.id]
-  subnets            = aws_subnet.public[*].id
-  drop_invalid_header_fields = true
-}
-
+# Security Groups
 resource "aws_security_group" "lb" {
-  vpc_id = aws_vpc.main.id
+  name        = "lb-sg-${random_id.suffix.hex}"
   description = "Security group for the Application Load Balancer"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port = 80
-    to_port   = 80
-    protocol  = "tcp"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-ingress-sgr
     description = "Allow HTTP inbound traffic from internet"
   }
+  
   egress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-egress-sgr
     description = "Allow all outbound traffic"
+  }
+  
+  tags = {
+    Name = "load-balancer-sg"
   }
 }
 
 resource "aws_security_group" "ecs_tasks" {
-  vpc_id      = aws_vpc.main.id
+  name        = "ecs-tasks-sg-${random_id.suffix.hex}"
   description = "Security group for ECS tasks"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 8000
-    to_port         = 8000
+    from_port       = 80
+    to_port         = 80
     protocol        = "tcp"
     security_groups = [aws_security_group.lb.id]
     description     = "Allow traffic from ALB on container port"
@@ -169,20 +160,13 @@ resource "aws_security_group" "ecs_tasks" {
     cidr_blocks = ["0.0.0.0/0"] #tfsec:ignore:aws-ec2-no-public-egress-sgr
     description = "Allow all outbound traffic"
   }
+  
+  tags = {
+    Name = "ecs-tasks-sg"
+  }
 }
 
-output "alb_dns_name" {
-  value       = aws_lb.main.dns_name
-  description = "The DNS name of the ALB"
-}
-
-# ... Data sources and other resources would go here
-data "aws_availability_zones" "available" {}
-
-resource "random_id" "suffix" {
-  byte_length = 4
-}
-
+# Secrets Manager
 #tfsec:ignore:aws-ssm-secret-use-customer-key
 resource "aws_secretsmanager_secret" "db_password" {
   name = "db-password-${random_id.suffix.hex}"
@@ -190,10 +174,12 @@ resource "aws_secretsmanager_secret" "db_password" {
 
 resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id     = aws_secretsmanager_secret.db_password.id
-  secret_string = "{\"password\":\"fake-db-password-change-me\"}"
+  secret_string = jsonencode({
+    password = "fake-db-password-change-me"
+  })
 }
 
-# ECS Task Execution Role (Required for secrets)
+# IAM Roles
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "ecs-task-execution-role-${random_id.suffix.hex}"
 
@@ -209,6 +195,10 @@ resource "aws_iam_role" "ecs_task_execution_role" {
       }
     ]
   })
+  
+  tags = {
+    Name = "ecs-task-execution-role"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
@@ -217,7 +207,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 }
 
 resource "aws_iam_role_policy" "ecs_secrets_policy" {
-  name = "ecs-secrets-policy"
+  name = "ecs-secrets-policy-${random_id.suffix.hex}"
   role = aws_iam_role.ecs_task_execution_role.id
 
   policy = jsonencode({
@@ -226,12 +216,116 @@ resource "aws_iam_role_policy" "ecs_secrets_policy" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
+          "secretsmanager:GetSecretValue",
+          "kms:Decrypt"
         ]
         Resource = [
-          aws_secretsmanager_secret.db_password.arn
+          aws_secretsmanager_secret.db_password.arn,
+          "*"
         ]
       }
     ]
   })
+}
+
+# CloudWatch Logs
+resource "aws_cloudwatch_log_group" "backend" {
+  name              = "/ecs/backend"
+  retention_in_days = 7
+}
+
+# ECS Task Definition
+resource "aws_ecs_task_definition" "backend" {
+  family                   = "backend-task-${random_id.suffix.hex}"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_execution_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "backend"
+      image     = "nginx:alpine"  # Using a placeholder - replace with your actual image
+      essential = true
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+          protocol      = "tcp"
+        }
+      ]
+      secrets = [
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = "${aws_secretsmanager_secret.db_password.arn}:password::"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.backend.name
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+}
+
+# ECS Service
+resource "aws_ecs_service" "backend" {
+  name            = "backend-service-${random_id.suffix.hex}"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.backend.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.backend.arn
+    container_name   = "backend"
+    container_port   = 80
+  }
+
+  deployment_controller {
+    type = "ECS"
+  }
+  
+  # Avoid conflicts with ALB during initial creation
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+  
+  depends_on = [
+    aws_lb_target_group.backend,
+    aws_lb_listener.front_end
+  ]
+}
+
+output "alb_dns_name" {
+  value       = aws_lb.main.dns_name
+  description = "The DNS name of the ALB"
+}
+
+output "ecs_cluster_name" {
+  value       = aws_ecs_cluster.main.name
+  description = "ECS Cluster name"
+}
+
+output "task_definition_family" {
+  value       = aws_ecs_task_definition.backend.family
+  description = "ECS Task Definition family"
+}
+
+output "secret_name" {
+  value       = aws_secretsmanager_secret.db_password.name
+  description = "Secrets Manager secret name"
+  sensitive   = true
 }

@@ -7,7 +7,7 @@ This repository contains a full-stack web application (Python Backend + Next.js 
 - `frontend/`: Next.js application
 - `terraform/`: IaC configurations for AWS and GCP
 - `.github/workflows/`: CI/CD pipelines
-
+   
 ## 🚀 Getting Started
 
 ### Prerequisites

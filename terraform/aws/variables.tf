@@ -1,8 +1,3 @@
-variable "project_id" {
-  description = "The GCP project ID"
-  type        = string
-}
-
 variable "docker_username" {
   description = "Docker Hub username"
   type        = string

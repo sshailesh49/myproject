@@ -10,7 +10,7 @@ resource "google_cloud_run_service" "backend" {
   template {
     spec {
       containers {
-        image = "gcr.io/${var.project_id}/backend:latest"
+        image = "docker.io/${var.docker_username}/myproject-backend:latest"
         env {
           name = "PORT"
           value = "8000"
@@ -41,7 +41,7 @@ resource "google_cloud_run_service" "frontend" {
   template {
     spec {
       containers {
-        image = "gcr.io/${var.project_id}/frontend:latest"
+        image = "docker.io/${var.docker_username}/myproject-frontend:latest"
       }
     }
   }
